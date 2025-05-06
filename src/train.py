@@ -15,7 +15,7 @@ def train(num_epochs=10, lr=1e-4, batch_size=2, model_save_path="model.pth"):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # Dataset and DataLoader
-    dataset = InstanceSegDataset("hw3-data-release", is_train=True, transforms=ToTensor())
+    dataset = InstanceSegDataset("data", is_train=True, transforms=ToTensor())
     data_loader = DataLoader(dataset, batch_size=batch_size, shuffle=True, collate_fn=collate_fn)
 
     # Model
