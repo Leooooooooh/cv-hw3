@@ -5,6 +5,7 @@ from torchvision.transforms import ToTensor
 import numpy as np
 from PIL import Image
 import glob
+from tifffile import imread
 
 
 class InstanceSegDataset(Dataset):
@@ -36,7 +37,7 @@ class InstanceSegDataset(Dataset):
                 class_mask_path = os.path.join(mask_dir, f'class{class_idx}.tif')
                 if not os.path.exists(class_mask_path):
                     continue
-                class_mask = np.array(Image.open(class_mask_path))
+                class_mask = imread(class_mask_path)
                 instance_ids = np.unique(class_mask)
                 instance_ids = instance_ids[instance_ids > 0]
 
