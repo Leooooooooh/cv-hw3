@@ -10,10 +10,18 @@ from src.dataset import InstanceSegDataset
 from src.model import get_instance_segmentation_model
 from src.transforms import get_val_transform
 
+# Load the mapping from test_image_name_to_ids.json
+with open("test_image_name_to_ids.json", "r") as f:
+    image_id_data = json.load(f)
+filename_to_id = {entry["file_name"]: entry["id"] for entry in image_id_data}
 
-def convert_to_coco_format(preds, image_ids):
-    coco_results = []
-    for pred, image_id in zip(preds, image_ids):
+def convert_test_predictions(preds, filenames):
+    results = []
+    for pred, fname in zip(preds, filenames):
+        image_id = filename_to_id.get(f"{fname}.tif")
+        if image_id is None:
+            raise ValueError(f"Image filename {fname} not found in mapping.")
+
         boxes = pred["boxes"].cpu().numpy()
         scores = pred["scores"].cpu().numpy()
         labels = pred["labels"].cpu().numpy()
@@ -21,58 +29,53 @@ def convert_to_coco_format(preds, image_ids):
 
         for box, score, label, mask in zip(boxes, scores, labels, masks):
             x1, y1, x2, y2 = box
-            coco_box = [float(x1), float(y1), float(x2 - x1), float(y2 - y1)]
+            bbox = [float(x1), float(y1), float(x2 - x1), float(y2 - y1)]
 
-            # Encode mask in RLE format (for COCO)
             rle = mask_utils.encode(np.asfortranarray(mask[0] > 0.5))
-            rle["counts"] = rle["counts"].decode("utf-8")  # for JSON compatibility
+            rle["counts"] = rle["counts"].decode("utf-8")
 
-            coco_results.append({
-                "image_id": int(image_id),
+            results.append({
+                "image_id": image_id,
                 "category_id": int(label),
-                "bbox": coco_box,
+                "bbox": bbox,
                 "score": float(score),
                 "segmentation": rle
             })
-    return coco_results
+    return results
 
 
-def generate_predictions(model_path, val_data_root, output_path="predictions.json"):
+def predict_test(model_path, test_data_root, output_path="test_predictions.json"):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    # Load model
     model = get_instance_segmentation_model(num_classes=5)
     model.load_state_dict(torch.load(model_path, map_location=device))
     model.to(device)
     model.eval()
 
-    # Dataset
-    val_dataset = InstanceSegDataset(root_dir=val_data_root, is_train=False, transforms=get_val_transform())
-    val_loader = DataLoader(val_dataset, batch_size=1, shuffle=False)
+    test_dataset = InstanceSegDataset(root_dir=test_data_root, is_train=False, transforms=get_val_transform())
+    test_loader = DataLoader(test_dataset, batch_size=1, shuffle=False)
 
-    results = []
-    image_ids = []
+    predictions = []
+    filenames = []
 
-    for images, ids in tqdm(val_loader, desc="Generating predictions"):
+    for images, ids in tqdm(test_loader, desc="Predicting on test"):
         images = [img.to(device) for img in images]
         with torch.no_grad():
             outputs = model(images)
 
-        results.extend(outputs)
-        image_ids.extend([int(id) for id in ids])
+        predictions.extend(outputs)
+        filenames.extend(ids)
 
-    # Convert to COCO format
-    coco_results = convert_to_coco_format(results, image_ids)
+    result_json = convert_test_predictions(predictions, filenames)
 
-    # Write to JSON
     with open(output_path, "w") as f:
-        json.dump(coco_results, f)
-    print(f"✅ Saved {len(coco_results)} predictions to {output_path}")
+        json.dump(result_json, f)
+    print(f"✅ Saved {len(result_json)} predictions to: {output_path}")
 
 
 if __name__ == "__main__":
-    generate_predictions(
+    predict_test(
         model_path="model.pth",
-        val_data_root="hw3-data-release",
-        output_path="predictions.json"
+        test_data_root="data",  # path to your test images
+        output_path="test-results.json"
     )

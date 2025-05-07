@@ -90,6 +90,6 @@ class InstanceSegDataset(Dataset):
         else:
             img_path = self.samples[idx]
             image = Image.open(img_path).convert("RGB")
-            image = self.transforms(image)
+            image = self.transforms(image=np.array(image))["image"]
             image_id = os.path.basename(img_path).replace('.tif', '')
             return image, image_id
