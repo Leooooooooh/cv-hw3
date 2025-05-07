@@ -6,6 +6,7 @@ from src.dataset import InstanceSegDataset
 from src.model import get_instance_segmentation_model
 import os
 from tqdm import tqdm
+from src.transforms import get_train_transform
 
 def collate_fn(batch):
     return tuple(zip(*batch))
@@ -15,7 +16,7 @@ def train(num_epochs=10, lr=1e-4, batch_size=2, model_save_path="model.pth"):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # Dataset and DataLoader
-    dataset = InstanceSegDataset("data", is_train=True, transforms=ToTensor())
+    dataset = InstanceSegDataset("data", is_train=True, transforms=get_train_transform())
     data_loader = DataLoader(dataset, batch_size=batch_size, shuffle=True, collate_fn=collate_fn)
 
     # Model

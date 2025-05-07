@@ -31,8 +31,9 @@ class InstanceSegDataset(Dataset):
 
             # Load all mask classes: class1.tif, class2.tif, ...
             mask_dir = os.path.join(self.root_dir, 'train', sample_id)
-            masks = []
-            labels = []
+            raw_masks = []
+            raw_labels = []
+
             for class_idx in range(1, 5):  # class1 to class4
                 class_mask_path = os.path.join(mask_dir, f'class{class_idx}.tif')
                 if not os.path.exists(class_mask_path):
@@ -43,21 +44,46 @@ class InstanceSegDataset(Dataset):
 
                 for instance_id in instance_ids:
                     instance_mask = (class_mask == instance_id).astype(np.uint8)
-                    masks.append(instance_mask)
-                    labels.append(class_idx)
+                    raw_masks.append(instance_mask)
+                    raw_labels.append(class_idx)
 
             if self.transforms:
-                transformed = self.transforms(image=np.array(image), masks=masks)
+                transformed = self.transforms(image=np.array(image), masks=raw_masks)
                 image = transformed["image"]
-                masks = torch.stack([torch.tensor(m, dtype=torch.uint8) for m in transformed["masks"]])
+                transformed_masks = transformed["masks"]
             else:
                 image = ToTensor()(image)
-                masks = torch.stack([torch.tensor(m, dtype=torch.uint8) for m in masks])
+                transformed_masks = raw_masks
 
-            labels = torch.tensor(labels, dtype=torch.int64)
+            # Process masks → tensor, remove empty masks
+            masks = []
+            labels = []
+            boxes = []
+            for i, m in enumerate(transformed_masks):
+                m_tensor = torch.tensor(m, dtype=torch.uint8)
+                pos = torch.nonzero(m_tensor)
+                if pos.numel() == 0:
+                    continue
+                xmin, ymin = pos.min(dim=0)[0]
+                xmax, ymax = pos.max(dim=0)[0]
+                boxes.append([xmin.item(), ymin.item(), xmax.item(), ymax.item()])
+                masks.append(m_tensor)
+                labels.append(raw_labels[i])
+
+            if len(masks) == 0:
+                # fallback: return dummy data to avoid crashing
+                masks = torch.zeros((0, image.shape[1], image.shape[2]), dtype=torch.uint8)
+                boxes = torch.zeros((0, 4), dtype=torch.float32)
+                labels = torch.zeros((0,), dtype=torch.int64)
+            else:
+                masks = torch.stack(masks)
+                boxes = torch.tensor(boxes, dtype=torch.float32)
+                labels = torch.tensor(labels, dtype=torch.int64)
+
             target = {
                 "masks": masks,
                 "labels": labels,
+                "boxes": boxes,
             }
             return image, target
 
