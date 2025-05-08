@@ -1,10 +1,10 @@
 import os
+import glob
 import torch
 from torch.utils.data import Dataset
 from torchvision.transforms import ToTensor
 import numpy as np
 from PIL import Image
-import glob
 from tifffile import imread
 
 
@@ -29,7 +29,7 @@ class InstanceSegDataset(Dataset):
             img_path = os.path.join(self.root_dir, 'train', sample_id, 'image.tif')
             image = Image.open(img_path).convert("RGB")
 
-            # Load all mask classes: class1.tif, class2.tif, ...
+            # Load all instance masks from class1.tif to class4.tif
             mask_dir = os.path.join(self.root_dir, 'train', sample_id)
             raw_masks = []
             raw_labels = []
@@ -40,11 +40,11 @@ class InstanceSegDataset(Dataset):
                     continue
                 class_mask = imread(class_mask_path)
                 instance_ids = np.unique(class_mask)
-                instance_ids = instance_ids[instance_ids > 0]
+                instance_ids = instance_ids[instance_ids > 0]  # ignore background
 
                 for instance_id in instance_ids:
-                    instance_mask = (class_mask == instance_id).astype(np.uint8)
-                    raw_masks.append(instance_mask)
+                    binary_mask = (class_mask == instance_id).astype(np.uint8)
+                    raw_masks.append(binary_mask)
                     raw_labels.append(class_idx)
 
             if self.transforms:
@@ -55,7 +55,7 @@ class InstanceSegDataset(Dataset):
                 image = ToTensor()(image)
                 transformed_masks = raw_masks
 
-            # Process masks → tensor, remove empty masks
+            # Final cleanup
             masks = []
             labels = []
             boxes = []
@@ -71,7 +71,6 @@ class InstanceSegDataset(Dataset):
                 labels.append(raw_labels[i])
 
             if len(masks) == 0:
-                # fallback: return dummy data to avoid crashing
                 masks = torch.zeros((0, image.shape[1], image.shape[2]), dtype=torch.uint8)
                 boxes = torch.zeros((0, 4), dtype=torch.float32)
                 labels = torch.zeros((0,), dtype=torch.int64)
