@@ -1,92 +1,96 @@
-import os
 import torch
-import numpy as np
-import matplotlib.pyplot as plt
-from tqdm import tqdm
+import torchvision
 from torch.utils.data import DataLoader
-from torchvision.models.detection import maskrcnn_resnet50_fpn_v2, MaskRCNN_ResNet50_FPN_V2_Weights
-from torchvision.models.detection.faster_rcnn import FastRCNNPredictor
-from torchvision.models.detection.mask_rcnn import MaskRCNNPredictor
-
+from torchvision.transforms import ToTensor
 from src.dataset import InstanceSegDataset
-from src.transforms import get_train_transform
+from src.model import get_instance_segmentation_model
+import os
+from tqdm import tqdm
+from src.transforms import get_train_transform, get_val_transform
+import matplotlib.pyplot as plt
+import numpy as np
+from pycocotools.coco import COCO
+from pycocotools.cocoeval import COCOeval
+import json
 
+def collate_fn(batch):
+    return tuple(zip(*batch))
 
-def get_instance_segmentation_model(num_classes):
-    weights = MaskRCNN_ResNet50_FPN_V2_Weights.DEFAULT
-    model = maskrcnn_resnet50_fpn_v2(weights=weights)
+def evaluate(model, data_loader, device):
+    model.eval()
+    coco_results = []
+    image_ids = []
+    for images, targets in tqdm(data_loader, desc="Evaluating"):
+        images = [img.to(device) for img in images]
+        with torch.no_grad():
+            outputs = model(images)
+        for output, target in zip(outputs, targets):
+            boxes = output['boxes'].cpu().numpy()
+            scores = output['scores'].cpu().numpy()
+            labels = output['labels'].cpu().numpy()
+            image_id = target.get("image_id", torch.tensor([0])).item()
+            for box, score, label in zip(boxes, scores, labels):
+                x1, y1, x2, y2 = box
+                coco_results.append({
+                    "image_id": image_id,
+                    "category_id": int(label),
+                    "bbox": [float(x1), float(y1), float(x2 - x1), float(y2 - y1)],
+                    "score": float(score),
+                })
+            image_ids.append(image_id)
+    # Simulated COCOEval - place actual val annotations if available
+    print(f"[Mock] Evaluated {len(image_ids)} samples. Save results to evaluate properly if needed.")
 
-    # Replace classification head
-    in_features = model.roi_heads.box_predictor.cls_score.in_features
-    model.roi_heads.box_predictor = FastRCNNPredictor(in_features, num_classes)
+def train(num_epochs=16, lr=1e-4, batch_size=2, model_save_path="model.pth"):
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    train_dataset = InstanceSegDataset("data", is_train=True, transforms=get_train_transform())
+    val_dataset = InstanceSegDataset("data", is_train=False, transforms=get_val_transform())
 
-    # Replace mask prediction head
-    in_features_mask = model.roi_heads.mask_predictor.conv5_mask.in_channels
-    hidden_layer = 256
-    model.roi_heads.mask_predictor = MaskRCNNPredictor(
-        in_features_mask, hidden_layer, num_classes
-    )
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, collate_fn=collate_fn)
+    val_loader = DataLoader(val_dataset, batch_size=1, shuffle=False, collate_fn=collate_fn)
 
-    return model
-
-
-def train(num_epochs=10, lr=1e-3, batch_size=2, model_save_dir="checkpoints"):
-    device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
-
-    # Dataset and DataLoader
-    dataset = InstanceSegDataset("data", is_train=True, transforms=get_train_transform())
-    data_loader = DataLoader(dataset, batch_size=batch_size, shuffle=True, collate_fn=lambda x: tuple(zip(*x)))
-
-    # Make sure all labels are > 0
-    print(f"Checking sample labels...")
-    image, target = dataset[0]
-    print(f"→ Sample labels: {target['labels']} (should be ≥ 1)")
-
-    num_classes = 5  # background + 4 classes
-    model = get_instance_segmentation_model(num_classes)
+    model = get_instance_segmentation_model(num_classes=5)
     model.to(device)
 
-    # Optimizer
     params = [p for p in model.parameters() if p.requires_grad]
-    optimizer = torch.optim.SGD(params, lr=lr, momentum=0.9, weight_decay=0.0005)
+    optimizer = torch.optim.AdamW(params, lr=lr)
+    lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=5, gamma=0.1)
 
-    os.makedirs(model_save_dir, exist_ok=True)
     loss_history = []
-
     model.train()
     for epoch in range(num_epochs):
-        print(f"\n📘 Epoch {epoch + 1}/{num_epochs}")
-        epoch_loss = []
+        print(f"\n📘 Epoch {epoch+1}/{num_epochs}")
+        total_loss = 0.0
 
-        for images, targets in tqdm(data_loader):
+        for images, targets in tqdm(train_loader):
             images = [img.to(device) for img in images]
             targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
-
-            optimizer.zero_grad()
             loss_dict = model(images, targets)
             losses = sum(loss for loss in loss_dict.values())
+
+            optimizer.zero_grad()
             losses.backward()
             optimizer.step()
 
-            epoch_loss.append(losses.item())
+            total_loss += losses.item()
 
-        mean_loss = np.mean(epoch_loss)
-        loss_history.append(mean_loss)
-        print(f"📉 Avg Loss: {mean_loss:.4f}")
+        avg_loss = total_loss / len(train_loader)
+        loss_history.append(avg_loss)
+        lr_scheduler.step()
+        print(f"✅ Epoch {epoch+1} Avg Loss: {avg_loss:.4f}")
+        torch.save(model.state_dict(), model_save_path)
+        print(f"📦 Model saved to {model_save_path}")
 
-        # Save model
-        save_path = os.path.join(model_save_dir, f"maskrcnn_epoch{epoch + 1}.pth")
-        torch.save(model.state_dict(), save_path)
-        print(f"💾 Saved model to {save_path}")
+        # Evaluate on val set
+        print("🔎 Evaluating on validation set...")
+        evaluate(model, val_loader, device)
 
-    # Plot loss history
-    plt.plot(range(1, num_epochs + 1), loss_history)
+    plt.plot(np.arange(1, num_epochs + 1), loss_history, marker='o')
     plt.xlabel("Epoch")
-    plt.ylabel("Avg Loss")
-    plt.title("Training Loss")
+    plt.ylabel("Training Loss")
+    plt.title("Training Loss Curve")
     plt.grid(True)
     plt.show()
-
 
 if __name__ == "__main__":
     train()
