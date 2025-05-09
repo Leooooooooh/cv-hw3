@@ -70,14 +70,10 @@ class InstanceSegDataset(Dataset):
             masks.append(m_tensor)
             labels.append(raw_labels[i])
 
-        if len(masks) == 0:
-            masks = torch.zeros((0, image.shape[1], image.shape[2]), dtype=torch.uint8)
-            boxes = torch.zeros((0, 4), dtype=torch.float32)
-            labels = torch.zeros((0,), dtype=torch.int64)
-        else:
-            masks = torch.stack(masks)
-            boxes = torch.tensor(boxes, dtype=torch.float32)
-            labels = torch.tensor(labels, dtype=torch.int64)
+
+        masks = torch.stack(masks)
+        boxes = torch.tensor(boxes, dtype=torch.float32)
+        labels = torch.tensor(labels, dtype=torch.int64)
 
         target = {
             "masks": masks,

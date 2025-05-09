@@ -1,81 +1,96 @@
-import torch
-import torchvision
-import numpy as np
-from torch.utils.data import DataLoader
-from tqdm import tqdm
-import json
 import os
+import json
+import torch
+import numpy as np
+from tqdm import tqdm
+from torch.utils.data import DataLoader
 from pycocotools import mask as mask_utils
-from src.dataset import InstanceSegDataset
-from src.model import get_instance_segmentation_model
-from src.transforms import get_val_transform
 
-# Load the mapping from test_image_name_to_ids.json
+from src.dataset import InstanceSegDataset
+from src.transforms import get_val_transform
+from src.model import get_instance_segmentation_model
+
+# Load test image ID mapping
 with open("test_image_name_to_ids.json", "r") as f:
     image_id_data = json.load(f)
 filename_to_id = {entry["file_name"]: entry["id"] for entry in image_id_data}
 
-def convert_test_predictions(preds, filenames):
+def convert_predictions_to_json(predictions, filenames, score_thresh=0.3):
     results = []
-    for pred, fname in zip(preds, filenames):
+    for pred, fname in zip(predictions, filenames):
         image_id = filename_to_id.get(f"{fname}.tif")
         if image_id is None:
-            raise ValueError(f"Image filename {fname} not found in mapping.")
+            print(f"⚠️ {fname}.tif not found in mapping, skipping.")
+            continue
 
         boxes = pred["boxes"].cpu().numpy()
         scores = pred["scores"].cpu().numpy()
         labels = pred["labels"].cpu().numpy()
         masks = pred["masks"].cpu().numpy()
+        height, width = masks.shape[-2:]
 
-        for box, score, label, mask in zip(boxes, scores, labels, masks):
-            x1, y1, x2, y2 = box
-            bbox = [float(x1), float(y1), float(x2 - x1), float(y2 - y1)]
+        sorted_indices = np.argsort(-scores)
+        for idx in sorted_indices:
+            score = scores[idx]
+            if score < score_thresh:
+                continue
+            label = int(labels[idx])
+            if label == 0:
+                continue
 
-            rle = mask_utils.encode(np.asfortranarray(mask[0] > 0.5))
+            mask = (masks[idx][0] > 0.5).astype(np.uint8)
+            rle = mask_utils.encode(np.asfortranarray(mask))
             rle["counts"] = rle["counts"].decode("utf-8")
+            rle["size"] = [int(height), int(width)]
+
+            x1, y1, x2, y2 = boxes[idx]
+            bbox = [
+                round(float(x1), 2),
+                round(float(y1), 2),
+                round(float(x2 - x1), 2),
+                round(float(y2 - y1), 2),
+            ]
 
             results.append({
                 "image_id": image_id,
-                "category_id": int(label),
+                "category_id": label,
                 "bbox": bbox,
-                "score": float(score),
+                "score": round(float(score), 4),
                 "segmentation": rle
             })
     return results
 
-
-def predict_test(model_path, test_data_root, output_path="test_predictions.json"):
+def run_test(model_path, test_root="data", output_json="test-results.json"):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
     model = get_instance_segmentation_model(num_classes=5)
     model.load_state_dict(torch.load(model_path, map_location=device))
     model.to(device)
     model.eval()
 
-    test_dataset = InstanceSegDataset(root_dir=test_data_root, is_train=False, transforms=get_val_transform())
+    test_dataset = InstanceSegDataset(root_dir=test_root, is_train=False, transforms=get_val_transform())
     test_loader = DataLoader(test_dataset, batch_size=1, shuffle=False)
 
-    predictions = []
-    filenames = []
+    all_preds = []
+    all_filenames = []
 
-    for images, ids in tqdm(test_loader, desc="Predicting on test"):
+    for images, ids in tqdm(test_loader, desc="🔍 Running Inference"):
         images = [img.to(device) for img in images]
         with torch.no_grad():
             outputs = model(images)
 
-        predictions.extend(outputs)
-        filenames.extend(ids)
+        all_preds.extend(outputs)
+        all_filenames.extend(ids)
 
-    result_json = convert_test_predictions(predictions, filenames)
+    result_json = convert_predictions_to_json(all_preds, all_filenames)
 
-    with open(output_path, "w") as f:
+    with open(output_json, "w") as f:
         json.dump(result_json, f)
-    print(f"✅ Saved {len(result_json)} predictions to: {output_path}")
 
+    print(f"✅ Saved {len(result_json)} predictions to {output_json}")
 
 if __name__ == "__main__":
-    predict_test(
+    run_test(
         model_path="model.pth",
-        test_data_root="data",  # path to your test images
-        output_path="test-results.json"
+        test_root="data",
+        output_json="test-results.json"
     )

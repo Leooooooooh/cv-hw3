@@ -54,17 +54,19 @@ def train(num_epochs=16, lr=1e-4, batch_size=2, model_save_path="model.pth"):
 
     params = [p for p in model.parameters() if p.requires_grad]
     optimizer = torch.optim.AdamW(params, lr=lr)
-    lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=5, gamma=0.1)
+    lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=num_epochs)
 
     loss_history = []
-    model.train()
+
     for epoch in range(num_epochs):
         print(f"\n📘 Epoch {epoch+1}/{num_epochs}")
+        model.train()  # ✅ ensure training mode
         total_loss = 0.0
 
         for images, targets in tqdm(train_loader):
             images = [img.to(device) for img in images]
             targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
+
             loss_dict = model(images, targets)
             losses = sum(loss for loss in loss_dict.values())
 
@@ -76,21 +78,22 @@ def train(num_epochs=16, lr=1e-4, batch_size=2, model_save_path="model.pth"):
 
         avg_loss = total_loss / len(train_loader)
         loss_history.append(avg_loss)
+        print(f"✅ Avg Loss: {avg_loss:.4f} | 🔁 LR: {lr_scheduler.get_last_lr()[0]:.6f}")
+
         lr_scheduler.step()
-        print(f"✅ Epoch {epoch+1} Avg Loss: {avg_loss:.4f}")
+
         torch.save(model.state_dict(), model_save_path)
         print(f"📦 Model saved to {model_save_path}")
 
-        # Evaluate on val set
         print("🔎 Evaluating on validation set...")
         evaluate(model, val_loader, device)
 
+    # Plot loss
     plt.plot(np.arange(1, num_epochs + 1), loss_history, marker='o')
     plt.xlabel("Epoch")
     plt.ylabel("Training Loss")
     plt.title("Training Loss Curve")
     plt.grid(True)
     plt.show()
-
 if __name__ == "__main__":
     train()
